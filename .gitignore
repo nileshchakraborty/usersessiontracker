@@ -76,5 +76,7 @@ coverage/
 # Misc
 .DS_Store
 Thumbs.db 
-
 volumes/*
+
+secrets.yaml
+secret.yaml
