@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-session-tracker
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: user-session-tracker
+  template:
+    metadata:
+      labels:
+        app: user-session-tracker
+    spec:
+      containers:
+      - name: user-session-tracker
+        image: user-session-tracker:latest
+        ports:
+        - containerPort: 8080
+        envFrom:
+        - configMapRef:
+            name: user-session-tracker-config
+        - secretRef:
+            name: user-session-tracker-secrets
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10 

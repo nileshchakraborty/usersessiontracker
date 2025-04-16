@@ -1,0 +1,95 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: spring-app
+  namespace: spring-app
+spec:
+  type: LoadBalancer
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: management
+      port: 8081
+      targetPort: 8081
+  selector:
+    app: spring-app
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spring-app
+  namespace: spring-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: spring-app
+  template:
+    metadata:
+      labels:
+        app: spring-app
+    spec:
+      containers:
+        - name: spring-app
+          image: spring-app:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 8081
+              name: management
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              valueFrom:
+                configMapKeyRef:
+                  name: spring-config
+                  key: SPRING_PROFILES_ACTIVE
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: spring-config
+                  key: DB_HOST
+            - name: DB_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: spring-config
+                  key: DB_PORT
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: spring-config
+                  key: DB_NAME
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: spring-secrets
+                  key: DB_USERNAME
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: spring-secrets
+                  key: DB_PASSWORD
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3 

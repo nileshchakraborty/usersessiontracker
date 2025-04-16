@@ -1,0 +1,48 @@
+{
+  "name": "user-session-tracker",
+  "version": "1.0.0",
+  "description": "User Session Tracker - Spring Boot application with AWS integration",
+  "private": true,
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "scripts": {
+    "deploy": "serverless deploy",
+    "remove": "serverless remove",
+    "package": "serverless package",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "serverless": "^3.38.0",
+    "serverless-offline": "^13.3.3",
+    "serverless-dotenv-plugin": "^6.0.0",
+    "serverless-iam-roles-per-function": "^3.2.0",
+    "serverless-pseudo-parameters": "^2.7.0",
+    "serverless-prune-plugin": "^2.0.2",
+    "serverless-s3-sync": "^3.1.0",
+    "serverless-deployment-bucket": "^1.6.0",
+    "serverless-domain-manager": "^6.2.1",
+    "serverless-plugin-warmup": "^8.2.1",
+    "serverless-plugin-tracing": "^2.0.0",
+    "serverless-plugin-canary-deployments": "^0.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.19",
+    "typescript": "^5.3.3",
+    "eslint": "^8.56.0",
+    "prettier": "^3.2.5",
+    "husky": "^9.0.11",
+    "lint-staged": "^15.2.2"
+  },
+  "lint-staged": {
+    "*.{js,ts,json,yml,yaml,md}": [
+      "prettier --write"
+    ]
+  },
+  "husky": {
+    "hooks": {
+      "pre-commit": "lint-staged"
+    }
+  }
+} 

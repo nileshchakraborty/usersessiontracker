@@ -1,0 +1,261 @@
+service: user-session-tracker
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: java17
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+  memorySize: 512
+  timeout: 30
+  environment:
+    AWS_NODEJS_CONNECTION_REUSE_ENABLED: 1
+    NODE_OPTIONS: --enable-source-maps
+    DYNAMODB_TABLE: ${self:custom.dynamoTable}
+    SQS_QUEUE_URL: ${self:custom.sqsQueueUrl}
+    FIREHOSE_STREAM: ${self:custom.firehoseStream}
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:*
+          Resource: 
+            - !GetAtt SessionTable.Arn
+            - !GetAtt SessionTable.Arn/*
+        - Effect: Allow
+          Action:
+            - sqs:*
+          Resource: 
+            - !GetAtt SessionQueue.Arn
+        - Effect: Allow
+          Action:
+            - kinesis:*
+          Resource: 
+            - !GetAtt SessionStream.Arn
+        - Effect: Allow
+          Action:
+            - s3:*
+          Resource: 
+            - !Sub arn:aws:s3:::${self:service}-${self:provider.stage}-data
+            - !Sub arn:aws:s3:::${self:service}-${self:provider.stage}-data/*
+
+plugins:
+  - serverless-offline
+  - serverless-dotenv-plugin
+  - serverless-iam-roles-per-function
+  - serverless-pseudo-parameters
+  - serverless-prune-plugin
+  - serverless-s3-sync
+  - serverless-deployment-bucket
+  - serverless-domain-manager
+  - serverless-plugin-warmup
+  - serverless-plugin-tracing
+  - serverless-plugin-canary-deployments
+
+custom:
+  dotenv:
+    path: .env
+  prune:
+    automatic: true
+    number: 3
+  s3Sync:
+    - bucketName: ${self:service}-${self:provider.stage}-data
+      localDir: data
+  deploymentBucket:
+    name: ${self:service}-${self:provider.stage}-deployment
+    serverSideEncryption: AES256
+  customDomain:
+    domainName: ${self:service}.${self:provider.stage}.example.com
+    basePath: ''
+    stage: ${self:provider.stage}
+    createRoute53Record: true
+  warmup:
+    default:
+      enabled: true
+      schedule: rate(5 minutes)
+      prewarm: true
+  tracing:
+    apiGateway: true
+    lambda: true
+  canaryDeployments:
+    functions:
+      - processSession
+      - analyzeSession
+  dynamoTable: user_sessions
+  sqsQueueUrl: user-session-queue
+  firehoseStream: user-session-stream
+  ecsCluster: user-session-cluster
+  ecsService: user-session-service
+  ecsTaskDefinition: user-session-task
+
+package:
+  individually: true
+  patterns:
+    - '!node_modules/**'
+    - '!test/**'
+    - '!src/test/**'
+    - '!*.md'
+    - '!*.yml'
+    - '!*.yaml'
+    - '!*.json'
+    - '!*.lock'
+    - '!*.log'
+    - '!*.git/**'
+
+functions:
+  processSession:
+    handler: com.example.usersessiontracker.ProcessSessionHandler
+    description: Process user session events
+    memorySize: 1024
+    timeout: 60
+    events:
+      - sqs:
+          arn: !GetAtt SessionQueue.Arn
+          batchSize: 10
+    environment:
+      DYNAMODB_TABLE: !Ref SessionTable
+      S3_BUCKET: ${self:service}-${self:provider.stage}-data
+    tracing: true
+    canaryDeployments:
+      enabled: true
+      alias: Live
+      preHook: pre-deploy.sh
+      postHook: post-deploy.sh
+      type: Linear10PercentEvery10Minutes
+
+  analyzeSession:
+    handler: com.example.usersessiontracker.AnalyzeSessionHandler
+    description: Analyze user session data
+    memorySize: 2048
+    timeout: 300
+    events:
+      - schedule: rate(1 hour)
+    environment:
+      DYNAMODB_TABLE: !Ref SessionTable
+      ATHENA_DATABASE: ${self:service}_${self:provider.stage}
+      ATHENA_TABLE: sessions
+    tracing: true
+
+resources:
+  Resources:
+    SessionTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${self:provider.stage}-sessions
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: sessionId
+            AttributeType: S
+          - AttributeName: userId
+            AttributeType: S
+          - AttributeName: timestamp
+            AttributeType: N
+        KeySchema:
+          - AttributeName: sessionId
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: UserIdIndex
+            KeySchema:
+              - AttributeName: userId
+                KeyType: HASH
+              - AttributeName: timestamp
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+
+    SessionQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-${self:provider.stage}-sessions
+        VisibilityTimeout: 300
+        MessageRetentionPeriod: 1209600
+        RedrivePolicy:
+          deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+          maxReceiveCount: 3
+
+    DeadLetterQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-${self:provider.stage}-sessions-dlq
+        MessageRetentionPeriod: 1209600
+
+    SessionStream:
+      Type: AWS::Kinesis::Stream
+      Properties:
+        Name: ${self:service}-${self:provider.stage}-sessions
+        ShardCount: 1
+        RetentionPeriodHours: 24
+
+    SessionBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:service}-${self:provider.stage}-data
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                SSEAlgorithm: AES256
+        LifecycleConfiguration:
+          Rules:
+            - Id: ExpireOldData
+              Status: Enabled
+              ExpirationInDays: 90
+              NoncurrentVersionExpirationInDays: 30
+
+    ECSCluster:
+      Type: AWS::ECS::Cluster
+      Properties:
+        ClusterName: ${self:custom.ecsCluster}
+
+    ECSTaskDefinition:
+      Type: AWS::ECS::TaskDefinition
+      Properties:
+        Family: ${self:custom.ecsTaskDefinition}
+        NetworkMode: awsvpc
+        RequiresCompatibilities:
+          - FARGATE
+        Cpu: 256
+        Memory: 512
+        ExecutionRoleArn: !GetAtt ECSExecutionRole.Arn
+        TaskRoleArn: !GetAtt ECSTaskRole.Arn
+        ContainerDefinitions:
+          - Name: user-session-app
+            Image: ${self:custom.ecrRepository}:latest
+            PortMappings:
+              - ContainerPort: 8081
+            Environment:
+              - Name: DYNAMODB_TABLE
+                Value: ${self:custom.dynamoTable}
+              - Name: SQS_QUEUE_URL
+                Value: ${self:custom.sqsQueueUrl}
+              - Name: FIREHOSE_STREAM
+                Value: ${self:custom.firehoseStream}
+
+    ECSExecutionRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: ecs-tasks.amazonaws.com
+              Action: sts:AssumeRole
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+    ECSTaskRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: ecs-tasks.amazonaws.com
+              Action: sts:AssumeRole
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+          - arn:aws:iam::aws:policy/AmazonSQSFullAccess
+          - arn:aws:iam::aws:policy/AmazonKinesisFirehoseFullAccess 

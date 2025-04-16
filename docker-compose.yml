@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    environment:
+      - SPRING_PROFILES_ACTIVE=prod
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=spring_db
+      - DB_USERNAME=postgres
+      - DB_PASSWORD=postgres
+    depends_on:
+      - postgres
+      - localstack
+    networks:
+      - spring-network
+
+  postgres:
+    image: postgres:14-alpine
+    environment:
+      POSTGRES_DB: spring_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - spring-network
+
+  localstack:
+    image: localstack/localstack:1.4.0
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=dynamodb,s3,sqs,kinesis,cloudwatch
+      - DEFAULT_REGION=us-east-1
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - "${LOCALSTACK_VOLUME_DIR:-./volume}:/var/lib/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    networks:
+      - spring-network
+
+volumes:
+  postgres_data:
+
+networks:
+  spring-network:
+    driver: bridge 

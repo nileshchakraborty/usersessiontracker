@@ -1,0 +1,117 @@
+name: GitOps Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'src/**'
+      - 'k8s/**'
+      - '.gitops/**'
+      - 'serverless.yml'
+      - 'package.json'
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'src/**'
+      - 'k8s/**'
+      - '.gitops/**'
+      - 'serverless.yml'
+      - 'package.json'
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: user-session-tracker
+  EKS_CLUSTER_NAME: user-session-cluster
+  ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+  ARGOCD_TOKEN: ${{ secrets.ARGOCD_TOKEN }}
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'
+          
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          
+      - name: Build with Maven
+        run: mvn clean package -DskipTests
+        
+      - name: Run Tests
+        run: mvn test
+        
+      - name: Install Serverless Framework
+        run: npm install -g serverless
+        
+      - name: Deploy to AWS
+        run: |
+          aws configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws configure set region ${{ env.AWS_REGION }}
+          serverless deploy --stage ${{ github.ref_name }}
+          
+      - name: Build and Push Docker Image
+        run: |
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+          docker build -t ${{ env.ECR_REPOSITORY }}:${{ github.sha }} .
+          docker tag ${{ env.ECR_REPOSITORY }}:${{ github.sha }} ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          docker push ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          
+      - name: Update ArgoCD Application
+        run: |
+          curl -X PATCH ${{ env.ARGOCD_SERVER }}/api/v1/applications/user-session-tracker \
+            -H "Authorization: Bearer ${{ env.ARGOCD_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "spec": {
+                "source": {
+                  "targetRevision": "${{ github.sha }}"
+                }
+              }
+            }'
+            
+      - name: Wait for ArgoCD Sync
+        run: |
+          while true; do
+            status=$(curl -s -H "Authorization: Bearer ${{ env.ARGOCD_TOKEN }}" \
+              ${{ env.ARGOCD_SERVER }}/api/v1/applications/user-session-tracker | jq -r '.status.sync.status')
+            if [ "$status" = "Synced" ]; then
+              echo "ArgoCD sync completed successfully"
+              break
+            fi
+            echo "Waiting for ArgoCD sync to complete..."
+            sleep 30
+          done
+          
+      - name: Run Integration Tests
+        run: mvn test -P integration
+        
+      - name: Run Security Scan
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+          
+      - name: Notify Slack
+        if: always()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          fields: repo,message,commit,author,action,eventName,ref,workflow,job,took
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }} 
